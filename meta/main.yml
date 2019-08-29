@@ -22,6 +22,7 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 galaxy_info:
+  role_name: mysql_percona_mariadb
   author: David Foley
   description: An ansible role which initialises MySQL/Percona/MariaDB Server software on a host
   license: Apache-2.0

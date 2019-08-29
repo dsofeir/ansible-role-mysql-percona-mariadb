@@ -1,0 +1,94 @@
+# ansible tasks file for role dsofeir.mysql_percona_mariadb
+#
+## Tasks which install MySQL community edition
+#
+# author: David Foley <dev@dfoley.ie>
+# licence:
+#
+#  Copyright 2019 David John Foley
+#
+#  Licensed under the Apache License, Version 2.0 (the "License");
+#  you may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+- block:
+  - set_fact:
+      runtime_password_worked: false
+      runtime_password_found: false
+
+# ___ init ___
+
+  - name: Install MySQL community repository .rpm
+    yum:
+      name: https://repo.mysql.com/mysql80-community-release-el7.rpm
+      state: installed
+
+  - name: Install MySQL community server package
+    yum:
+      name:
+        - mysql-community-server
+        - mysql-connector-python
+      state: installed
+
+  - name: Apply custom configuration to /etc/my.cnf
+    blockinfile:
+      block: "{{ mysql_percona_mariadb.custom_config }}"
+      dest: /etc/my.cnf
+      backup: yes
+      validate: mysqld --defaults-file=%s --validate-config
+    when: mysql_percona_mariadb.custom_config != none
+
+  - name: Enable and start MySQL community server service
+    service: name=mysqld state=started enabled=yes
+
+  - name: Fetch temporary MySQL root password from /var/log/mysqld.log
+    command: awk 'match($0, /^.*temporary\spassword.*root@localhost:\s(.*)$/, mtch) {print mtch[1]}' /var/log/mysqld.log
+    register: mysql_tmp_root_password
+
+  - set_fact: runtime_password_found=true
+    when: mysql_tmp_root_password.stdout != ""
+
+  - debug: msg="[NOTICE] Temporary password not found, won't attempt to set root password or secure installation"
+    when: runtime_password_found == false
+
+  - name: Check temporary MySQL root password is valid
+    command: mysql --user=root --password='{{mysql_tmp_root_password.stdout}}' --connect-expired-password
+    register: runtime_check_tmppasswordworks
+    ignore_errors: true
+    when: runtime_password_found == true
+
+  - set_fact: runtime_password_worked=true
+    when: runtime_password_found == true and runtime_check_tmppasswordworks.rc == 0
+
+  - debug: msg="[WARNING] Temporary password did not work, can't set root password or secure installation"
+    when: runtime_password_found == true and runtime_password_worked == false
+
+  - name: Set new MySQL root password
+    command: mysqladmin --user=root --password='{{mysql_tmp_root_password.stdout}}' password {{ mysql_percona_mariadb.root_password }}
+    when: runtime_password_worked == true
+
+  - name: Secure MySQL installation
+    command: "mysql --user=root --password='{{ mysql_percona_mariadb.root_password }}' --execute=\"DELETE FROM mysql.user WHERE User=''; DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost', '127.0.0.1', '::1');DROP DATABASE IF EXISTS test;DELETE FROM mysql.db WHERE Db='test' OR Db='test\\_%';FLUSH PRIVILEGES;\""
+    when: runtime_password_worked == true
+
+  - name: Create databases
+    command: "mysql --user=root --password='{{ mysql_percona_mariadb.root_password }}' --execute=\"CREATE DATABASE IF NOT EXISTS {{ item }}\""
+    with_items: "{{ mysql_percona_mariadb.databases }}"
+    when: mysql_percona_mariadb.databases is defined
+
+  - name: Create users
+    command: "mysql --user=root --password='{{ mysql_percona_mariadb.root_password }}' --execute=\"CREATE USER IF NOT EXISTS'{{ item.username }}'@'{{ item.host }}' IDENTIFIED BY '{{ item.password }}'; GRANT {{ item.privileges }} ON {{ item.db }} TO '{{ item.username }}'@'{{ item.host }}';\""
+    with_items: "{{ mysql_percona_mariadb.users }}"
+    when: mysql_percona_mariadb.users is defined
+
+  tags: [ role.dsofeir.mysql_percona_mariadb-mysql-community ]
